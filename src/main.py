@@ -5,6 +5,8 @@ from bs4 import BeautifulSoup
 import re
 import time
 from datetime import datetime, timezone
+import json
+from pydantic import BaseModel, ValidationError, HttpUrl
 
 CACHE_DIR = "cache"
 HEADERS = {
@@ -93,7 +95,30 @@ def cache_name_for_book(url: str) -> str:
     slug = url.rstrip("/").split("/")[-2]  # the folder name before index.html
     return f"book-{slug}.html"
 
+class Book(BaseModel):
+    title: str
+    product_url: str
+    price_text: str
+    price_gbp: float
+    availability_text: str
+    rating_text: str
+    description: str | None
+    source_page: str
+    fetched_at: str
+    
+    
+def clean_record(raw: dict) -> dict:
+    """Add a numeric price_gbp field to a raw record."""
+    price_text = raw["price_text"]
+    numeric = "".join(ch for ch in price_text if ch.isdigit() or ch == ".")
+    price_gbp = float(numeric)
 
+    cleaned = dict(raw)
+    cleaned["price_gbp"] = price_gbp
+    return cleaned
+
+
+    
 if __name__ == "__main__":
     MAX_PAGES = 3
     start_url = "https://books.toscrape.com/catalogue/page-1.html"
@@ -134,3 +159,27 @@ if __name__ == "__main__":
     print(f"detail_pages={len(records)}")
     print("\nSample record:")
     print(records[0])
+    
+    valid_books = []
+    errors = []
+    seen_urls = set()
+
+    for raw in records:
+        cleaned = clean_record(raw)
+        try:
+            book = Book(**cleaned)
+            if book.product_url not in seen_urls:
+                seen_urls.add(book.product_url)
+                valid_books.append(book.model_dump())
+        except ValidationError as e:
+            errors.append({"record": cleaned, "reason": str(e)})
+
+    os.makedirs("output", exist_ok=True)
+    with open("output/books.json", "w", encoding="utf-8") as f:
+        json.dump(valid_books, f, indent=2, ensure_ascii=False)
+
+    with open("output/errors.json", "w", encoding="utf-8") as f:
+        json.dump(errors, f, indent=2, ensure_ascii=False)
+
+    print(f"valid_records={len(valid_books)}")
+    print(f"invalid_records={len(errors)}")
