@@ -1,5 +1,7 @@
 import os
+from urllib.parse import urljoin
 import requests
+from bs4 import BeautifulSoup
 
 CACHE_DIR = "cache"
 HEADERS = {
@@ -30,5 +32,46 @@ def fetch_page(url: str, cache_filename: str) -> str:
     return html
 
 
+def get_book_links(html: str, page_url: str) -> list[str]:
+    """Return absolute URLs to every book on this catalogue page."""
+    soup = BeautifulSoup(html, "html.parser")
+    links = []
+    for article in soup.find_all("article", class_="product_pod"):
+        a_tag = article.find("h3").find("a")
+        href = a_tag["href"]
+        links.append(urljoin(page_url, href))
+    return links
+
+
+def get_next_page_url(html: str, page_url: str) -> str | None:
+    """Return the absolute URL of the 'next' catalogue page, or None if there isn't one."""
+    soup = BeautifulSoup(html, "html.parser")
+    next_li = soup.find("li", class_="next")
+    if next_li is None:
+        return None
+    href = next_li.find("a")["href"]
+    return urljoin(page_url, href)
+
+
 if __name__ == "__main__":
-    fetch_page("https://books.toscrape.com/catalogue/page-1.html", "catalogue-page-1.html")
+    MAX_PAGES = 3
+    start_url = "https://books.toscrape.com/catalogue/page-1.html"
+    current_url = start_url
+    page_num = 1
+    all_links = []
+
+    while current_url is not None and page_num <= MAX_PAGES:
+        cache_name = f"catalogue-page-{page_num}.html"
+        html = fetch_page(current_url, cache_name)
+
+        page_links = get_book_links(html, current_url)
+        all_links.extend(page_links)
+
+        current_url = get_next_page_url(html, current_url)
+        page_num += 1
+
+    unique_links = list(dict.fromkeys(all_links))  # dedupe, preserve order
+
+    print(f"catalogue_pages={min(page_num - 1, MAX_PAGES)}")
+    print(f"discovered={len(all_links)}")
+    print(f"unique_urls={len(unique_links)}")
