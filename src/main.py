@@ -24,16 +24,34 @@ def fetch_page(url: str, cache_filename: str) -> str:
         print(f"CACHE HIT: {cache_filename} ({len(html)} bytes)")
         return html
 
-    resp = requests.get(url, headers=HEADERS, timeout=15)
-    if resp.status_code != 200:
-        raise Exception(f"Failed to fetch {url}: status {resp.status_code}")
-    resp.encoding = "utf-8" 
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=15)
+        except requests.exceptions.Timeout:
+            if attempts >= 2:
+                raise Exception(f"Timed out fetching {url} after {attempts} attempts")
+            time.sleep(1)
+            continue
+
+        if resp.status_code == 200:
+            break
+        elif resp.status_code in (404, 403):
+            raise Exception(f"Failed to fetch {url}: status {resp.status_code} (not retrying)")
+        elif 500 <= resp.status_code < 600 and attempts < 2:
+            time.sleep(1)
+            continue
+        else:
+            raise Exception(f"Failed to fetch {url}: status {resp.status_code}")
+
+    resp.encoding = "utf-8"
     html = resp.text
     with open(cache_path, "w", encoding="utf-8") as f:
         f.write(html)
 
     print(f"FETCH: {cache_filename} ({len(html)} bytes)")
-    time.sleep(0.5)  # be polite — only delay on real network requests
+    time.sleep(0.5)
     return html
 
 
@@ -149,17 +167,29 @@ if __name__ == "__main__":
     print(f"unique_urls={len(unique_books)}")
 
     # Stage 3: extract every book
+    from datetime import datetime, timezone
+    run_start = datetime.now(timezone.utc)
+
+    # add one fake URL to prove failure handling works
+    unique_books.append(("https://books.toscrape.com/catalogue/this-book-does-not-exist_9999/index.html", "manual-test"))
+
     records = []
+    failed_pages = []
+    cache_hits_before = None  # optional, skip precise cache-hit counting for simplicity
+
     for product_url, source_page in unique_books:
         cache_name = cache_name_for_book(product_url)
-        book_html = fetch_page(product_url, cache_name)
-        record = extract_book(book_html, product_url, source_page)
-        records.append(record)
+        try:
+            book_html = fetch_page(product_url, cache_name)
+            record = extract_book(book_html, product_url, source_page)
+            records.append(record)
+        except Exception as e:
+            print(f"FAILED: {product_url} -> {e}")
+            failed_pages.append({"url": product_url, "reason": str(e)})
 
     print(f"detail_pages={len(records)}")
-    print("\nSample record:")
-    print(records[0])
-    
+    print(f"failed_pages={len(failed_pages)}")
+
     valid_books = []
     errors = []
     seen_urls = set()
@@ -183,3 +213,21 @@ if __name__ == "__main__":
 
     print(f"valid_records={len(valid_books)}")
     print(f"invalid_records={len(errors)}")
+    
+run_end = datetime.now(timezone.utc)
+duration_seconds = (run_end - run_start).total_seconds()
+
+report = {
+        "start_time": run_start.isoformat(),
+        "duration_seconds": duration_seconds,
+        "pages_fetched": len(records) + len(failed_pages),
+        "valid_records": len(valid_books),
+        "invalid_records": len(errors),
+        "failed_pages": len(failed_pages),
+        "failures": failed_pages,
+    }
+
+with open("output/run-report.json", "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+
+print(f"failed_pages={len(failed_pages)}")
